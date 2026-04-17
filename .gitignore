@@ -1,0 +1,24 @@
+# Never commit session cookies or auth state
+*cookies*.json
+*cookies*.txt
+session*.json
+*.env
+*.secret
+
+# Agent-browser session files (if any stray into project dir)
+.agent-browser/
+chatgpt-session-*.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp

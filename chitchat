@@ -1,0 +1,84 @@
+#!/bin/bash
+# Usage: chitchat "your prompt here"
+#
+# Fires a prompt into your ChatGPT web UI via CDP (Chrome DevTools Protocol)
+# connected to your real Windows Chrome. Fire-and-forget — does NOT wait for
+# or capture ChatGPT's response. Read the reply in your Chrome window.
+#
+# Requires: Windows Chrome launched with --remote-debugging-port=9222, logged
+# into chatgpt.com with your desired model (GPT-5.4-Pro extended thinking, or
+# GPT-5.4 thinking + Deep Research) selected as the default.
+#
+# See README.md for setup.
+
+set -u
+
+if [ -z "${1:-}" ]; then
+  echo "Usage: chitchat \"your prompt\""
+  exit 1
+fi
+
+PROMPT="$*"
+CDP_PORT=9222
+
+# Verify Chrome is reachable on the CDP port
+if ! curl -s --max-time 3 "http://localhost:$CDP_PORT/json/version" > /dev/null; then
+  echo "✗ Cannot reach Chrome at http://localhost:$CDP_PORT"
+  echo "  Launch Chrome on Windows with --remote-debugging-port=$CDP_PORT (see README)."
+  exit 1
+fi
+
+echo "→ Firing prompt into ChatGPT..."
+
+# Find existing chatgpt.com tab; open one if absent.
+# `tab list` output format: "  [N] <title> - <url>"
+CHATGPT_IDX=$(agent-browser --cdp "$CDP_PORT" tab list 2>&1 \
+  | grep -E '\[[0-9]+\][[:space:]].*https?://chatgpt\.com' \
+  | head -1 | grep -oE '\[[0-9]+\]' | tr -d '[]')
+
+if [ -z "$CHATGPT_IDX" ]; then
+  echo "  (no ChatGPT tab open — opening one)"
+  agent-browser --cdp "$CDP_PORT" tab new > /dev/null 2>&1
+  agent-browser --cdp "$CDP_PORT" open https://chatgpt.com --wait 4000ms > /dev/null 2>&1
+else
+  agent-browser --cdp "$CDP_PORT" tab "$CHATGPT_IDX" > /dev/null 2>&1
+fi
+
+# Brief CF-clearance wait — real Chrome usually passes invisible Turnstile in
+# 1-3s. If it's still parked after 10s, bail rather than fire into the void.
+for _ in 1 2 3 4 5; do
+  TITLE=$(agent-browser --cdp "$CDP_PORT" eval "document.title" 2>&1 \
+    | grep -v '^[✓✗]' | tr -d '"')
+  [ "$TITLE" = "ChatGPT" ] && break
+  sleep 2
+done
+
+if [ "${TITLE:-}" != "ChatGPT" ]; then
+  echo "✗ Tab stuck on '$TITLE' (Cloudflare challenge or login redirect)."
+  echo "  Open your Chrome, click the ChatGPT tab, and clear the challenge manually."
+  exit 1
+fi
+
+# Snapshot user-turn count so we can verify the prompt actually posted
+BEFORE=$(agent-browser --cdp "$CDP_PORT" eval \
+  "document.querySelectorAll('[data-message-author-role=\"user\"]').length" 2>&1 \
+  | grep -v '^[✓✗]' | tr -d '"')
+
+# Focus input, insert (NOT type — inserttext bypasses key events so \n stays \n)
+agent-browser --cdp "$CDP_PORT" click '#prompt-textarea' > /dev/null 2>&1
+agent-browser --cdp "$CDP_PORT" keyboard inserttext "$PROMPT" > /dev/null 2>&1
+agent-browser --cdp "$CDP_PORT" press Enter > /dev/null 2>&1
+
+# Short settle then one-shot verify (not polling — single check that it posted)
+sleep 2
+AFTER=$(agent-browser --cdp "$CDP_PORT" eval \
+  "document.querySelectorAll('[data-message-author-role=\"user\"]').length" 2>&1 \
+  | grep -v '^[✓✗]' | tr -d '"')
+
+if [ "${AFTER:-0}" -gt "${BEFORE:-0}" ]; then
+  echo "✓ Prompt fired. Read the reply in your ChatGPT Chrome tab."
+else
+  echo "⚠ Prompt may not have posted (user turns: ${BEFORE:-?} → ${AFTER:-?})."
+  echo "  Open your ChatGPT tab in Chrome and check."
+  exit 1
+fi
