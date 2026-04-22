@@ -1,8 +1,8 @@
 # The Puppeteer
 
-A headless bridge to ChatGPT's web UI, using your existing OpenAI Plus/Pro subscription. Runs as a CLI (`chitchat "prompt"`) and as a Claude Code agent (`the-puppeteer`).
+A bridge to ChatGPT's web UI, using your existing OpenAI Plus/Pro subscription. Runs as a CLI (`chitchat "prompt"`) and as a Claude Code agent (`the-puppeteer`).
 
-Sibling project to [the-musketeer](https://github.com/VeigaPunk/the-musketeer) (same idea, for Grok).
+Sibling project to [the-musketeer](https://github.com/VeigaPunk/the-musketeer) (same idea, for Grok). Both converged on the same transport: CDP attach to a dedicated Windows Chrome Dev.
 
 ## Why
 
@@ -23,18 +23,17 @@ For anything else (plain GPT-5.4, Codex-available tools), just use Codex CLI dir
 ```bash
 $ chitchat "Write a 40-page research brief on lattice cryptography post-2024"
 → Firing prompt into ChatGPT...
-✓ Prompt fired. Open chatgpt.com to read the reply when it's ready.
+✓ Prompt fired. Read the reply in your ChatGPT Chrome tab.
 ```
 
 Same shape from a Claude Code session: invoke the `the-puppeteer` agent with a prompt, it shells out to `chitchat`, reports "fired", returns control.
 
 ## Architecture
 
-1. **agent-browser** (a Playwright wrapper) runs a persistent Chromium session keyed by name. First-run opens a blank browser; subsequent runs restore the saved session. Crucially, the persistent session is what keeps the prompt alive after `chitchat` exits — the backgrounded browser stays open and ChatGPT keeps streaming into it.
-2. **Cookie injection** — instead of logging in via the automated browser (blocked by Google/Microsoft/Apple OAuth bot detection), you log in once in your real Chrome, export cookies via Cookie-Editor, and merge them into the automated browser's session file. The key cookies are the split pair `__Secure-next-auth.session-token.0` + `.1` on `chatgpt.com`.
-3. **Cloudflare UA fix** — the default Playwright user-agent trips `chatgpt.com`'s Cloudflare Turnstile. `chitchat` sets a real Chrome-on-Windows UA before every navigation, which is enough to pass the challenge when combined with valid cookies.
-4. **`chitchat` CLI** — navigates to chatgpt.com, dismisses overlays, types into `#prompt-textarea`, presses Enter, exits. No response capture.
-5. **Claude agent** — `the-puppeteer.md` is a user-level agent spec. Installed to `~/.claude/agents/`, it becomes callable via the Agent tool from any Claude Code session.
+1. **Chrome Dev with CDP** — you launch Windows Chrome Dev with `--user-data-dir=C:\ChromeAutomation --remote-debugging-port=9222`, sign into chatgpt.com once, and leave it running. The isolated user-data-dir is mandatory: Chrome silently disables remote debugging on the default profile as a security measure.
+2. **agent-browser `--cdp 9222`** — a native CLI that speaks Chrome DevTools Protocol. `chitchat` attaches to your existing Chrome, finds (or opens) a chatgpt.com tab, and drives it.
+3. **`chitchat` CLI** — navigates to chatgpt.com, waits out the (rare, since Chrome is real) Cloudflare Turnstile, types the prompt into `#prompt-textarea`, presses Enter, verifies the user-turn count incremented, exits.
+4. **Claude agent** — `the-puppeteer.md` is a user-level agent spec. Installed to `~/.claude/agents/`, it becomes callable via the Agent tool from any Claude Code session.
 
 ## Install
 
@@ -49,34 +48,39 @@ The installer:
 - Symlinks `chitchat` into `~/.local/bin/`
 - Symlinks the Claude agent into `~/.claude/agents/`
 
-## Authenticate (one-time, repeat when cookies expire)
+## Launch Chrome Dev with CDP (one-time)
 
-1. In your web UI, pick the model you want to run by default (likely GPT-5.4-Pro extended thinking, or GPT-5.4 thinking with Deep Research toggled on). The automated browser will inherit this via the `oai-last-model-config` cookie.
-2. Install [Cookie-Editor](https://chromewebstore.google.com/detail/cookie-editor/hlkenndednhfkekhgcdicdfddnkalmdm) in your real browser.
-3. On `chatgpt.com`: Cookie-Editor → Export as JSON → save to `/tmp/chatgpt-cookies.json`.
-4. Merge: `python3 merge-cookies.py /tmp/chatgpt-cookies.json`.
-5. Test: `chitchat "hello"` — should print `✓ Prompt fired.` then exit.
-6. Delete `/tmp/chatgpt-cookies.json` — it contains session tokens equivalent to your login password.
+`chitchat` attaches to a Chrome Dev instance running with CDP exposed. This must be a **dedicated Chrome Dev install** (not your everyday Chrome) because Chrome refuses to enable `--remote-debugging-port` on the default, sync-signed-in profile.
 
-`__Secure-next-auth.session-token.0` / `.1` are the JWT pair that expires; based on the snapshot used during bring-up, expiration was ~90 days out. When you start seeing `⚠ No user turn detected` or a Cloudflare interstitial that won't clear, repeat steps 3–4.
+1. Close any running Chrome Dev instance — including tray-resident background processes. Check Task Manager or right-click any Chrome Dev tray icon and Exit. (If the previous instance was launched without CDP flags, new launches inherit its empty flag set.)
+2. Relaunch Chrome Dev with the flags below. On Windows, edit a shortcut's target to:
+   ```
+   "C:\Program Files\Google\Chrome Dev\Application\chrome.exe" --user-data-dir=C:\ChromeAutomation --remote-debugging-port=9222 --no-first-run --no-default-browser-check
+   ```
+3. Sign into `chatgpt.com` with your Plus/Pro account. Pick your default model (e.g. GPT-5.4-Pro extended thinking, or GPT-5.4 thinking + Deep Research) in web-UI settings — `chitchat` never touches the model picker.
+4. From WSL, verify the port is reachable:
+   ```bash
+   curl -s http://localhost:9222/json/version
+   ```
+   You should see JSON with `"Browser": "Chrome/..."`. If not, check `netstat -ano | findstr :9222` on Windows — if nothing is listening, Chrome refused to enable CDP (usually because `--user-data-dir` was omitted).
+5. Test: `chitchat "hello"` — should print `✓ Prompt fired.` and exit immediately.
+
+This Chrome Dev install is dedicated to automation — sign into any other web services you want programmatic access to (grok.com for the-musketeer, notebooklm.google.com, etc.) in the same profile.
 
 ## Files
 
 - `chitchat` — the CLI executable.
-- `merge-cookies.py` — Cookie-Editor JSON → agent-browser session-state merger.
 - `the-puppeteer.md` — Claude Code agent spec.
 - `install.sh` — idempotent installer.
 
 ## Known limits
 
 - **No response retrieval.** By design. You read answers in `chatgpt.com`, not the terminal.
-- **One chat thread per session file.** `chitchat` always opens `chatgpt.com/` (the landing route), which on your account lands either on the most recent chat or a fresh new chat depending on session state. If you need prompts to live in separate threads, hit the "New chat" button in the web UI between runs.
+- **Shares a tab with your live browsing.** Each `chitchat` call reuses whatever chatgpt.com tab is open (or opens one if absent). Agent prompts and your manual chats land in the same conversation. For a fresh thread, hit the "New chat" button in the web UI first, or pin a dedicated chatgpt.com tab for agent use.
 - **Model is whatever the web UI default is.** `chitchat` never touches the model picker. Change it in `chatgpt.com` settings first.
-- **Fragile to DOM changes.** Selectors (`#prompt-textarea`, `button[aria-label="Close"]/[Dismiss]`) are ChatGPT-UI-specific. If OpenAI ships a redesign, the script may need updating.
-- **One account.** The session name is hardcoded as `chatgpt-session`. Use multiple installs with different session names if you need multiple accounts.
-- **Cloudflare fingerprinting risk.** The UA-header fix is enough today, but if OpenAI tightens Turnstile (e.g. adds JS challenges that check `navigator.webdriver`), you may need to add stealth shims or switch to `agent-browser --profile` (reusing a real Chrome profile).
-- **No tool/model selection.** Whatever model + tools are active in your web UI at login time are what the automated browser inherits. Change the default model in chatgpt.com settings if needed.
+- **Fragile to DOM changes.** Selectors (`#prompt-textarea`, `[data-message-author-role="user"]`) are ChatGPT-UI-specific. If OpenAI ships a redesign, the script may need updating.
+- **One Chrome, one port.** CDP on 9222 is a singleton — if you use the port for another tool (e.g. the-musketeer), they share the same Chrome instance (which is the intended setup).
 
 ## Security
 
-The session file at `~/.agent-browser/sessions/chatgpt-session-default.json` contains JWTs equivalent to your login password for that session. `.gitignore` blocks committing anything that looks like cookies. Never paste session JSON in a public channel.
+Your dedicated Chrome Dev profile at `C:\ChromeAutomation` holds your ChatGPT session (plus any other services you've signed into). Running Chrome with `--remote-debugging-port=9222` exposes CDP to anything that can reach `localhost:9222` on your Windows box — don't enable this port on a shared or exposed machine. On WSL the port is reachable from the Linux side only (same machine); that's fine. If you ever expose the port outside localhost, treat it as granting full control over your browser, including any signed-in session.

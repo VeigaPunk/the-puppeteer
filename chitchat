@@ -31,10 +31,10 @@ fi
 echo "→ Firing prompt into ChatGPT..."
 
 # Find existing chatgpt.com tab; open one if absent.
-# `tab list` output format: "  [N] <title> - <url>"
+# `tab list` format: "  [tN] <title> - <url>" (or "→ [tN] ..." for active tab)
 CHATGPT_IDX=$(agent-browser --cdp "$CDP_PORT" tab list 2>&1 \
-  | grep -E '\[[0-9]+\][[:space:]].*https?://chatgpt\.com' \
-  | head -1 | grep -oE '\[[0-9]+\]' | tr -d '[]')
+  | grep -E '\[t[0-9]+\][[:space:]].*https?://chatgpt\.com' \
+  | head -1 | grep -oE 't[0-9]+')
 
 if [ -z "$CHATGPT_IDX" ]; then
   echo "  (no ChatGPT tab open — opening one)"
