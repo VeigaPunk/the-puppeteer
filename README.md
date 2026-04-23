@@ -14,8 +14,6 @@ Primary use case:
 Secondary use case:
 - **GPT-5.4 (thinking) + Deep Research** — the agentic browse-and-synthesize loop exposed inside the web UI. Deep Research is a web-app orchestrator on top of the model; Codex CLI does not have an equivalent mode that reproduces it end-to-end.
 
-For anything else (plain GPT-5.4, Codex-available tools), just use Codex CLI directly — it's more ergonomic and already wired into your workflow than driving a browser. The Puppeteer is specifically the escape hatch for **web-UI-only capabilities**, reusing the existing Pro subscription's OAuth session rather than trying (and failing, same as Grok) to automate Google/Microsoft/Apple SSO.
-
 ## What it does
 
 **Fire-and-forget.** Drops a prompt into your logged-in ChatGPT web session and exits. Does not wait for, poll for, or capture the response — GPT-5.4-Pro Extended and Deep Research runs take minutes to hours, so blocking a terminal on them is pointless. You read the answer in `chatgpt.com` later, in your real browser.
