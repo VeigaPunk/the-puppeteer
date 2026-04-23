@@ -1,37 +1,81 @@
 #!/bin/bash
-# Usage: chitchat "your prompt here"
+# Usage: chitchat [--model <name>] [--image|--deep-research|--web-search] "your prompt"
 #
 # Fires a prompt into your ChatGPT web UI via CDP (Chrome DevTools Protocol)
-# connected to your real Windows Chrome. Fire-and-forget — does NOT wait for
+# attached to Windows Chrome Dev. Fire-and-forget by design — does NOT wait for
 # or capture ChatGPT's response. Read the reply in your Chrome window.
 #
-# Requires: Windows Chrome launched with --remote-debugging-port=9222, logged
-# into chatgpt.com with your desired model (GPT-5.4-Pro extended thinking, or
-# GPT-5.4 thinking + Deep Research) selected as the default.
+# Options:
+#   --model <name>   Switch model before submitting. Names: pro, thinking, instant
+#                    (aliases: p, t, i). Maps to ChatGPT data-testids:
+#                      pro      -> model-switcher-gpt-5-4-pro      (GPT-5.4-Pro extended)
+#                      thinking -> model-switcher-gpt-5-4-thinking (GPT-5.4 thinking)
+#                      instant  -> model-switcher-gpt-5-3          (GPT-5.3 instant)
+#                    Omitted: use the tab's current model (unchanged).
+#   --image          Switch composer to "Create image" mode before submitting.
+#   --deep-research  Switch composer to "Deep research" mode before submitting.
+#   --web-search     Switch composer to "Web search" mode before submitting.
+#   (image/deep-research/web-search are mutually exclusive)
 #
-# See README.md for setup.
+# Requires: Windows Chrome Dev launched with --remote-debugging-port=9222,
+# logged into chatgpt.com with a Plus/Pro account. See README.md for setup.
 
 set -u
 
-if [ -z "${1:-}" ]; then
-  echo "Usage: chitchat \"your prompt\""
+MODEL=""
+TOOL=""
+ARGS=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --model|-m)
+      shift; MODEL="${1:-}"; shift
+      ;;
+    --image)
+      TOOL="Create image"; shift
+      ;;
+    --deep-research|--deep)
+      TOOL="Deep research"; shift
+      ;;
+    --web-search|--web)
+      TOOL="Web search"; shift
+      ;;
+    --help|-h)
+      sed -n '2,25p' "$0"; exit 0
+      ;;
+    *)
+      ARGS+=("$1"); shift
+      ;;
+  esac
+done
+
+if [ ${#ARGS[@]} -eq 0 ]; then
+  echo "Usage: chitchat [--model <pro|thinking|instant>] [--image|--deep-research|--web-search] \"your prompt\""
   exit 1
 fi
-
-PROMPT="$*"
+PROMPT="${ARGS[*]}"
 CDP_PORT=9222
 
-# Verify Chrome is reachable on the CDP port
+# Map friendly model name -> data-testid
+MODEL_TESTID=""
+case "$MODEL" in
+  ""|auto)             MODEL_TESTID="" ;;
+  pro|p)               MODEL_TESTID="model-switcher-gpt-5-4-pro" ;;
+  thinking|think|t)    MODEL_TESTID="model-switcher-gpt-5-4-thinking" ;;
+  instant|i)           MODEL_TESTID="model-switcher-gpt-5-3" ;;
+  *)
+    echo "✗ Unknown --model '$MODEL'. Valid: pro, thinking, instant."; exit 1 ;;
+esac
+
+# Verify Chrome is reachable
 if ! curl -s --max-time 3 "http://localhost:$CDP_PORT/json/version" > /dev/null; then
   echo "✗ Cannot reach Chrome at http://localhost:$CDP_PORT"
   echo "  Launch Chrome on Windows with --remote-debugging-port=$CDP_PORT (see README)."
   exit 1
 fi
 
-echo "→ Firing prompt into ChatGPT..."
+echo "→ Firing prompt into ChatGPT${MODEL:+ (model=$MODEL)}${TOOL:+ (tool=$TOOL)}..."
 
-# Find existing chatgpt.com tab; open one if absent.
-# `tab list` format: "  [tN] <title> - <url>" (or "→ [tN] ..." for active tab)
+# Find or open chatgpt.com tab
 CHATGPT_IDX=$(agent-browser --cdp "$CDP_PORT" tab list 2>&1 \
   | grep -E '\[t[0-9]+\][[:space:]].*https?://chatgpt\.com' \
   | head -1 | grep -oE 't[0-9]+')
@@ -44,11 +88,9 @@ else
   agent-browser --cdp "$CDP_PORT" tab "$CHATGPT_IDX" > /dev/null 2>&1
 fi
 
-# Brief CF-clearance wait — real Chrome usually passes invisible Turnstile in
-# 1-3s. If it's still parked after 10s, bail rather than fire into the void.
+# Wait out any CF challenge (5x2s = 10s ceiling)
 for _ in 1 2 3 4 5; do
-  TITLE=$(agent-browser --cdp "$CDP_PORT" eval "document.title" 2>&1 \
-    | grep -v '^[✓✗]' | tr -d '"')
+  TITLE=$(agent-browser --cdp "$CDP_PORT" eval "document.title" 2>&1 | grep -v '^[✓✗]' | tr -d '"')
   [ "$TITLE" = "ChatGPT" ] && break
   sleep 2
 done
@@ -59,17 +101,63 @@ if [ "${TITLE:-}" != "ChatGPT" ]; then
   exit 1
 fi
 
-# Snapshot user-turn count so we can verify the prompt actually posted
+# --- Optional: switch model ---
+if [ -n "$MODEL_TESTID" ]; then
+  agent-browser --cdp "$CDP_PORT" click '[data-testid="model-switcher-dropdown-button"]' > /dev/null 2>&1
+  agent-browser --cdp "$CDP_PORT" wait 500 > /dev/null 2>&1
+  CLICKED=$(agent-browser --cdp "$CDP_PORT" eval "
+    (() => {
+      const el = document.querySelector('[data-testid=\"$MODEL_TESTID\"]');
+      if (!el) return 'miss';
+      el.click();
+      return 'ok';
+    })()
+  " 2>&1 | tail -1 | tr -d '"')
+  if [ "$CLICKED" != "ok" ]; then
+    echo "⚠ Model '$MODEL' not in picker (stayed on default). Menu closed."
+    agent-browser --cdp "$CDP_PORT" press Escape > /dev/null 2>&1
+  else
+    agent-browser --cdp "$CDP_PORT" wait 500 > /dev/null 2>&1
+  fi
+fi
+
+# --- Optional: switch composer tool (Create image / Deep research / Web search) ---
+# ChatGPT composer-plus-btn opens a menu containing both `menuitem` (actions like
+# "Add photos & files") and `menuitemradio` (mode toggles — Create image /
+# Deep research / Web search). Composer-plus-btn is the real click (Radix needs CDP mouse).
+if [ -n "$TOOL" ]; then
+  agent-browser --cdp "$CDP_PORT" click '[data-testid="composer-plus-btn"]' > /dev/null 2>&1
+  agent-browser --cdp "$CDP_PORT" wait 700 > /dev/null 2>&1
+  # Mark the target menuitemradio so we can click it via real CDP mouse
+  MARKED=$(agent-browser --cdp "$CDP_PORT" eval "
+    (() => {
+      document.querySelectorAll('[data-chitchat-tool]').forEach(el => el.removeAttribute('data-chitchat-tool'));
+      const target = Array.from(document.querySelectorAll('[role=\"menuitem\"], [role=\"menuitemradio\"]'))
+        .find(el => (el.innerText||'').trim().startsWith('$TOOL'));
+      if (!target) return 'miss';
+      target.setAttribute('data-chitchat-tool', '1');
+      return 'marked';
+    })()
+  " 2>&1 | tail -1 | tr -d '"')
+  if [ "$MARKED" = "marked" ]; then
+    agent-browser --cdp "$CDP_PORT" click '[data-chitchat-tool="1"]' > /dev/null 2>&1
+    agent-browser --cdp "$CDP_PORT" wait 600 > /dev/null 2>&1
+  else
+    echo "⚠ Tool '$TOOL' not found in composer menu (got: $MARKED). Falling through with current mode."
+    agent-browser --cdp "$CDP_PORT" press Escape > /dev/null 2>&1
+  fi
+fi
+
+# Snapshot user-turn count for verification
 BEFORE=$(agent-browser --cdp "$CDP_PORT" eval \
   "document.querySelectorAll('[data-message-author-role=\"user\"]').length" 2>&1 \
   | grep -v '^[✓✗]' | tr -d '"')
 
-# Focus input, insert (NOT type — inserttext bypasses key events so \n stays \n)
+# Focus + insert + submit (inserttext preserves \n, unlike type)
 agent-browser --cdp "$CDP_PORT" click '#prompt-textarea' > /dev/null 2>&1
 agent-browser --cdp "$CDP_PORT" keyboard inserttext "$PROMPT" > /dev/null 2>&1
 agent-browser --cdp "$CDP_PORT" press Enter > /dev/null 2>&1
 
-# Short settle then one-shot verify (not polling — single check that it posted)
 sleep 2
 AFTER=$(agent-browser --cdp "$CDP_PORT" eval \
   "document.querySelectorAll('[data-message-author-role=\"user\"]').length" 2>&1 \

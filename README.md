@@ -28,6 +28,25 @@ $ chitchat "Write a 40-page research brief on lattice cryptography post-2024"
 
 Same shape from a Claude Code session: invoke the `the-puppeteer` agent with a prompt, it shells out to `chitchat`, reports "fired", returns control.
 
+### Model + tool selection (optional flags)
+
+```bash
+# Switch model before firing
+chitchat --model pro "Research-grade analysis of X"       # GPT-5.4-Pro (extended)
+chitchat --model thinking "Complex reasoning on Y"         # GPT-5.4 thinking
+chitchat --model instant "Quick everyday question"         # GPT-5.3 instant
+
+# Toggle composer tool (mutually exclusive)
+chitchat --image "A minimalist red circle on white"        # Create image mode
+chitchat --deep-research "Survey post-quantum crypto 2026" # Deep Research agentic loop
+chitchat --web-search "Current Chrome Dev version"         # Web search mode
+
+# Combine
+chitchat --model pro --deep-research "multi-paper survey on X"
+```
+
+Flag aliases: `--model p|t|i` for pro/thinking/instant. `--deep` shorthand for `--deep-research`, `--web` for `--web-search`. Omitting `--model` leaves the tab's current model untouched.
+
 ## Architecture
 
 1. **Chrome Dev with CDP** — you launch Windows Chrome Dev with `--user-data-dir=C:\ChromeAutomation --remote-debugging-port=9222`, sign into chatgpt.com once, and leave it running. The isolated user-data-dir is mandatory: Chrome silently disables remote debugging on the default profile as a security measure.
@@ -77,9 +96,13 @@ This Chrome Dev install is dedicated to automation — sign into any other web s
 
 - **No response retrieval.** By design. You read answers in `chatgpt.com`, not the terminal.
 - **Shares a tab with your live browsing.** Each `chitchat` call reuses whatever chatgpt.com tab is open (or opens one if absent). Agent prompts and your manual chats land in the same conversation. For a fresh thread, hit the "New chat" button in the web UI first, or pin a dedicated chatgpt.com tab for agent use.
-- **Model is whatever the web UI default is.** `chitchat` never touches the model picker. Change it in `chatgpt.com` settings first.
-- **Fragile to DOM changes.** Selectors (`#prompt-textarea`, `[data-message-author-role="user"]`) are ChatGPT-UI-specific. If OpenAI ships a redesign, the script may need updating.
+- **Fragile to DOM changes.** Selectors (`#prompt-textarea`, `[data-message-author-role="user"]`, `[data-testid="model-switcher-dropdown-button"]`, `[data-testid="composer-plus-btn"]`, `[role="menuitemradio"]`) are ChatGPT-UI-specific. If OpenAI ships a redesign, the script may need updating.
 - **One Chrome, one port.** CDP on 9222 is a singleton — if you use the port for another tool (e.g. the-musketeer), they share the same Chrome instance (which is the intended setup).
+- **Tool modes apply to the next prompt only.** ChatGPT treats Create image / Deep research / Web search as single-fire modes; they don't persist across conversation turns.
+
+## Full setup
+
+See `SETUP.md` for end-to-end bootstrap instructions on a fresh WSL2 + Windows 10/11 machine — including Chrome Dev install, isolated profile creation, CDP reachability verification, agent-browser installation, Puppeteer-core alternative Node API, and the full gotcha list.
 
 ## Security
 
