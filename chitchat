@@ -66,12 +66,36 @@ case "$MODEL" in
     echo "✗ Unknown --model '$MODEL'. Valid: pro, thinking, instant."; exit 1 ;;
 esac
 
-# Verify Chrome is reachable
-if ! curl -s --max-time 3 "http://localhost:$CDP_PORT/json/version" > /dev/null; then
-  echo "✗ Cannot reach Chrome at http://localhost:$CDP_PORT"
-  echo "  Launch Chrome on Windows with --remote-debugging-port=$CDP_PORT (see README)."
-  exit 1
-fi
+# Ensure Windows Chrome Dev is reachable on CDP. Fast-path if already up;
+# otherwise launch it on the Windows side and poll until it binds the port.
+ensure_chrome_cdp() {
+  local port="$1"
+  if curl -s --max-time 2 "http://localhost:$port/json/version" > /dev/null 2>&1; then
+    return 0
+  fi
+  echo "→ Chrome Dev not on CDP $port — launching on Windows side..." >&2
+  local chrome='C:\Program Files\Google\Chrome Dev\Application\chrome.exe'
+  cmd.exe /C start "" "$chrome" \
+    --remote-debugging-port=$port \
+    --user-data-dir=C:\\ChromeAutomation \
+    --no-first-run \
+    --no-default-browser-check \
+    > /dev/null 2>&1
+  local timeout_s="${CHITCHAT_CDP_TIMEOUT:-20}"
+  local waited=0
+  while [ $waited -lt "$timeout_s" ]; do
+    if curl -s --max-time 1 "http://localhost:$port/json/version" > /dev/null 2>&1; then
+      echo "✓ Chrome Dev CDP $port reachable (${waited}s)" >&2
+      return 0
+    fi
+    sleep 1
+    waited=$((waited+1))
+  done
+  echo "✗ Chrome Dev did not come up on CDP $port within ${timeout_s}s." >&2
+  echo "  Manual: \"$chrome\" --remote-debugging-port=$port --user-data-dir=C:\\ChromeAutomation --no-first-run --no-default-browser-check" >&2
+  return 1
+}
+ensure_chrome_cdp "$CDP_PORT" || exit 1
 
 echo "→ Firing prompt into ChatGPT${MODEL:+ (model=$MODEL)}${TOOL:+ (tool=$TOOL)}..."
 
